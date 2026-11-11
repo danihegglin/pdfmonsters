@@ -26,7 +26,8 @@ const POLL: Duration = Duration::from_secs(2);
 
 pub struct Chains {
     pub focus: FocusHandle,
-    portraits: Vec<(Kind, Arc<Image>)>,
+    /// By step name.
+    portraits: Vec<(&'static str, Arc<Image>)>,
     chain: Chain,
     /// Files that went through the chain, newest first.
     runs: Vec<Run>,
@@ -47,21 +48,41 @@ struct Run {
     result: Option<anyhow::Result<Done>>,
 }
 
-fn kind(step: Step) -> Kind {
+fn kind(step: Step) -> Option<Kind> {
     match step {
-        Step::Munch => Kind::Munch,
-        Step::Peek => Kind::Peek,
-        Step::Squish(_) => Kind::Squish,
-        Step::Hush => Kind::Hush,
+        Step::Munch => Some(Kind::Munch),
+        Step::Peek => Some(Kind::Peek),
+        Step::Squish(_) => Some(Kind::Squish),
+        Step::Hush => Some(Kind::Hush),
+        Step::Extra(_) => None,
+    }
+}
+
+fn color(step: Step) -> u32 {
+    match (kind(step), step) {
+        (Some(kind), _) => kind.species().color,
+        (None, Step::Extra(e)) => e.0.color(),
+        (None, _) => theme::ACCENT,
+    }
+}
+
+/// A step's portrait. Registered steps without one borrow Munch's.
+fn portrait(step: Step) -> Arc<Image> {
+    match (kind(step), step) {
+        (Some(kind), _) => kind.portrait(),
+        (None, Step::Extra(e)) => match e.0.portrait_svg() {
+            Some(svg) => Arc::new(Image::from_bytes(gpui::ImageFormat::Svg, svg.into_bytes())),
+            None => Kind::Munch.portrait(),
+        },
+        (None, _) => Kind::Munch.portrait(),
     }
 }
 
 impl Chains {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let kinds = [Kind::Munch, Kind::Peek, Kind::Squish, Kind::Hush];
         Chains {
             focus: cx.focus_handle(),
-            portraits: kinds.into_iter().map(|k| (k, k.portrait())).collect(),
+            portraits: Step::offered().into_iter().map(|s| (s.name(), portrait(s))).collect(),
             chain: Chain::classic(),
             runs: Vec::new(),
             running: 0,
@@ -178,8 +199,8 @@ impl Chains {
         cx.notify();
     }
 
-    fn portrait(&self, kind: Kind) -> Arc<Image> {
-        self.portraits.iter().find(|(k, _)| *k == kind).map(|(_, p)| p.clone()).expect("chainable monster")
+    fn portrait(&self, step: Step) -> Arc<Image> {
+        self.portraits.iter().find(|(name, _)| *name == step.name()).map(|(_, p)| p.clone()).expect("chainable monster")
     }
 
     /// Sends each PDF through the current chain and saves it as `NAME.chained.pdf`.
@@ -261,7 +282,7 @@ impl Chains {
     }
 
     fn render_step(&self, ix: usize, step: Step, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let color = kind(step).species().color;
+        let color = color(step);
         let job = match step {
             // Squish's level is picked by clicking it, so say so.
             Step::Squish(level) => format!("shrinks it · {} ▾", level.label()),
@@ -303,7 +324,7 @@ impl Chains {
                     })),
                 ),
             )
-            .child(img(self.portrait(kind(step))).w(px(64.)).h(px(66.)))
+            .child(img(self.portrait(step)).w(px(64.)).h(px(66.)))
             .child(div().font_weight(FontWeight::BOLD).child(step.name()))
             .child(div().text_xs().text_center().text_color(rgb(color)).child(job))
             .into_any_element()
@@ -368,12 +389,12 @@ impl Render for Chains {
                     .into_any_element(),
             );
         }
-        let adders: Vec<_> = Step::ALL
+        let adders: Vec<_> = Step::offered()
             .into_iter()
             .enumerate()
             .map(|(ix, step)| {
-                let taken = self.chain.0.iter().any(|s| kind(*s) == kind(step));
-                button(["add-munch", "add-peek", "add-squish", "add-hush"][ix], format!("+ {}", step.name()), false)
+                let taken = self.chain.0.iter().any(|s| s.name() == step.name());
+                button(("add", ix), format!("+ {}", step.name()), false)
                     .when(taken, |b| b.opacity(0.4))
                     .when(!taken, |b| {
                         b.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -466,7 +487,7 @@ impl Render for Chains {
 
         let icon = div()
             .flex()
-            .children([Kind::Munch, Kind::Peek, Kind::Squish].map(|k| img(self.portrait(k)).w(px(24.)).h(px(25.))));
+            .children([Step::Munch, Step::Peek, Step::Squish(squish::Level::default())].map(|s| img(self.portrait(s)).w(px(24.)).h(px(25.))));
         let buttons = vec![
             button("open", "Open…", self.runs.is_empty())
                 .on_click(cx.listener(|this, _: &ClickEvent, w, cx| this.open(&Open, w, cx)))

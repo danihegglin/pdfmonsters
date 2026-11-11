@@ -8,7 +8,7 @@
 use std::{
     fmt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use anyhow::Result;
@@ -22,11 +22,67 @@ pub enum Step {
     Peek,
     Squish(squish::Level),
     Hush,
+    /// A step added by another build, see [`register`].
+    Extra(Extra),
+}
+
+/// A chain step that isn't one of the free monsters. Register it with
+/// [`register`] (or `Extensions::steps`) before chains are parsed, and it
+/// works everywhere a chain does: the chains screen, watched folders and
+/// `pdfmonster chain`.
+pub trait ChainStep: Send + Sync + 'static {
+    /// How it's written in a chain, lower case: `stamp` in `munch > stamp`.
+    fn id(&self) -> &'static str;
+    fn name(&self) -> &'static str;
+    /// What it does, in a few words.
+    fn job(&self) -> String;
+    /// Its colour on the chains screen.
+    fn color(&self) -> u32;
+    /// Its portrait as SVG, if it has one.
+    fn portrait_svg(&self) -> Option<String> {
+        None
+    }
+    /// Does its job on `doc` and says what it did, in one line.
+    fn run(&self, doc: &mut Document) -> Result<String>;
+}
+
+/// A registered [`ChainStep`]. Steps with the same id are the same step.
+#[derive(Clone, Copy)]
+pub struct Extra(pub &'static dyn ChainStep);
+
+impl PartialEq for Extra {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id() == other.0.id()
+    }
+}
+
+impl Eq for Extra {}
+
+impl fmt::Debug for Extra {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Extra({})", self.0.id())
+    }
+}
+
+static EXTRA_STEPS: OnceLock<Vec<&'static dyn ChainStep>> = OnceLock::new();
+
+/// Adds steps to every chain from now on. Only the first call counts.
+pub fn register(steps: Vec<&'static dyn ChainStep>) {
+    let _ = EXTRA_STEPS.set(steps);
+}
+
+fn extra_steps() -> &'static [&'static dyn ChainStep] {
+    EXTRA_STEPS.get().map_or(&[], Vec::as_slice)
 }
 
 impl Step {
-    /// Every step, in the order they're offered.
+    /// The free monsters' steps, in the order they're offered.
     pub const ALL: [Step; 4] = [Step::Munch, Step::Peek, Step::Squish(squish::Level::Medium), Step::Hush];
+
+    /// Every step there is, registered ones after the free ones.
+    pub fn offered() -> Vec<Step> {
+        Step::ALL.into_iter().chain(extra_steps().iter().map(|&s| Step::Extra(Extra(s)))).collect()
+    }
 
     /// `munch`, `peek`, `squish`, `squish:strong`, `hush`.
     pub fn parse(s: &str) -> Option<Step> {
@@ -38,6 +94,7 @@ impl Step {
             ("hush", None) => Some(Step::Hush),
             ("squish", None) => Some(Step::Squish(squish::Level::default())),
             ("squish", Some(level)) => squish::Level::parse(level).map(Step::Squish),
+            (name, None) => extra_steps().iter().find(|e| e.id() == name).map(|&e| Step::Extra(Extra(e))),
             _ => None,
         }
     }
@@ -48,6 +105,7 @@ impl Step {
             Step::Peek => "Peek",
             Step::Squish(_) => "Squish",
             Step::Hush => "Hush",
+            Step::Extra(e) => e.0.name(),
         }
     }
 
@@ -58,6 +116,7 @@ impl Step {
             Step::Peek => "makes it searchable".into(),
             Step::Squish(level) => format!("shrinks it ({})", level.label()),
             Step::Hush => "wipes metadata".into(),
+            Step::Extra(e) => e.0.job(),
         }
     }
 }
@@ -66,6 +125,7 @@ impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Step::Squish(level) if *level != squish::Level::default() => write!(f, "squish:{}", level.label()),
+            Step::Extra(e) => f.write_str(e.0.id()),
             step => f.write_str(&step.name().to_ascii_lowercase()),
         }
     }
@@ -87,7 +147,8 @@ impl Chain {
             .filter(|s| !s.is_empty() && *s != "-")
             .map(|s| {
                 Step::parse(s).ok_or_else(|| {
-                    anyhow::anyhow!("{s:?} can't be chained; use munch, peek, squish[:light|:strong] or hush")
+                    let extra: String = extra_steps().iter().map(|e| format!(", {}", e.id())).collect();
+                    anyhow::anyhow!("{s:?} can't be chained; use munch, peek, squish[:light|:strong], hush{extra}")
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -157,6 +218,7 @@ pub fn run(mut doc: Document, chain: &Chain, on_step: &dyn Fn(usize, Step)) -> R
                 let wiped = hush::strip_metadata(&mut doc);
                 format!("Hush wiped {wiped} bit{} of metadata", if wiped == 1 { "" } else { "s" })
             }
+            Step::Extra(e) => e.0.run(&mut doc)?,
         };
         log.push(line);
     }
@@ -185,6 +247,40 @@ mod tests {
         assert!(Chain::parse("munch > stitch").is_err());
         assert!(Chain::parse("squish:huge").is_err());
         assert!(Chain::parse(" > ").is_err());
+    }
+
+    struct Stamp;
+
+    impl ChainStep for Stamp {
+        fn id(&self) -> &'static str {
+            "stamp"
+        }
+        fn name(&self) -> &'static str {
+            "Stamp"
+        }
+        fn job(&self) -> String {
+            "stamps it".into()
+        }
+        fn color(&self) -> u32 {
+            0xff0000
+        }
+        fn run(&self, doc: &mut Document) -> Result<String> {
+            doc.trailer.set("Stamped", true);
+            Ok("Stamp stamped it".into())
+        }
+    }
+
+    #[test]
+    fn registered_steps_parse_print_and_run() {
+        register(vec![&Stamp]);
+        let chain = Chain::parse("munch > stamp").unwrap();
+        assert_eq!(chain.0[1], Step::Extra(Extra(&Stamp)));
+        assert_eq!(chain.to_string(), "munch > stamp");
+        assert!(Step::offered().contains(&Step::Extra(Extra(&Stamp))));
+        assert!(Chain::parse("stamp:big").is_err());
+        let (bytes, log) = run(text_pdf(&["one"]), &chain, &|_, _| {}).unwrap();
+        assert_eq!(log[1], "Stamp stamped it");
+        assert!(Document::load_mem(&bytes).unwrap().trailer.get(b"Stamped").is_ok());
     }
 
     #[test]

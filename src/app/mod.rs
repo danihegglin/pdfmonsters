@@ -3,7 +3,7 @@
 mod chain;
 mod hush;
 mod munch;
-mod pack;
+pub mod pack;
 mod peek;
 mod snip;
 mod squish;
@@ -26,7 +26,8 @@ use pack::{Kind, PACK};
 
 actions!(pdfmonster, [Open, Save, ToggleOriginal, GoHome, Quit]);
 
-mod theme {
+/// The app's colours, for screens added by other builds to match.
+pub mod theme {
     pub const BG: u32 = 0x16131e;
     pub const PANEL: u32 = 0x1f1a2b;
     pub const CARD: u32 = 0x282236;
@@ -41,7 +42,9 @@ mod theme {
     pub const MUTED: u32 = 0x9a93ad;
 }
 
-pub fn run(initial: Vec<PathBuf>) {
+/// Opens the app, with `initial` files fed to Munch (one) or Stitch (several).
+pub fn run(initial: Vec<PathBuf>, extensions: crate::Extensions) {
+    let crate::Extensions { monsters: extras, menus, setup, branding, .. } = extensions;
     Application::new().run(move |cx: &mut App| {
         cx.activate(true);
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -52,10 +55,10 @@ pub fn run(initial: Vec<PathBuf>) {
             KeyBinding::new("escape", GoHome, None),
             KeyBinding::new("secondary-q", Quit, None),
         ]);
-        cx.set_menus(vec![
+        let mut all_menus = vec![
             Menu {
-                name: "pdfmonster".into(),
-                items: vec![MenuItem::action("Quit pdfmonster", Quit)],
+                name: branding.name.into(),
+                items: vec![MenuItem::action(format!("Quit {}", branding.name), Quit)],
             },
             Menu {
                 name: "File".into(),
@@ -68,17 +71,22 @@ pub fn run(initial: Vec<PathBuf>) {
                     MenuItem::action("Toggle Before / After", ToggleOriginal),
                 ],
             },
-        ]);
+        ];
+        all_menus.extend(menus);
+        cx.set_menus(all_menus);
+        if let Some(setup) = setup {
+            setup(cx);
+        }
         cx.on_window_closed(|cx| cx.quit()).detach();
 
         let bounds = Bounds::centered(None, size(px(1120.), px(780.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("pdfmonster".into()),
+                title: Some(branding.name.into()),
                 ..Default::default()
             }),
-            app_id: Some("pdfmonster".into()),
+            app_id: Some(branding.app_id.into()),
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
@@ -86,13 +94,15 @@ pub fn run(initial: Vec<PathBuf>) {
                 let mut home = Home {
                     focus: cx.focus_handle(),
                     portraits: PACK.iter().map(|k| k.portrait()).collect(),
+                    extra_portraits: extras.iter().map(|m| (m.portrait)()).collect(),
+                    extras,
                     tools: Vec::new(),
                     active: None,
                     status: "Drop a PDF on a monster to feed it. Anywhere else: one file goes to Munch, several to Stitch.".into(),
                 };
                 // Watched folders keep working from the moment the app opens.
                 if !crate::watch::load().is_empty() {
-                    home.tools.push(Tool::new(Screen::Chains, cx));
+                    home.tools.push(Tool::new(Screen::Chains, &[], cx));
                     home.status = "Watching folders for new PDFs. See Chain them up.".into();
                 }
                 match initial.len() {
@@ -111,6 +121,8 @@ pub fn run(initial: Vec<PathBuf>) {
 enum Screen {
     Monster(Kind),
     Chains,
+    /// One of [`Extensions::monsters`](crate::Extensions), by position.
+    Extra(usize),
 }
 
 impl From<Kind> for Screen {
@@ -119,102 +131,131 @@ impl From<Kind> for Screen {
     }
 }
 
-/// One open monster screen.
-enum Tool {
-    Munch(Entity<munch::Munch>),
-    Stitch(Entity<stitch::Stitch>),
-    Snip(Entity<snip::Snip>),
-    Squish(Entity<squish::Squish>),
-    Hush(Entity<hush::Hush>),
-    Peek(Entity<peek::Peek>),
-    Chains(Entity<chain::Chains>),
+/// A screen that can be shown in the window: every monster's, the chains, and
+/// any added through [`Extensions`](crate::Extensions).
+pub trait MonsterScreen: Render {
+    /// What gets focus when the screen is shown.
+    fn focus_handle(&self) -> FocusHandle;
+    /// Hands the screen files dropped on it (or on its tile).
+    fn feed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>);
 }
 
-impl Tool {
-    fn new(screen: Screen, cx: &mut App) -> Self {
-        match screen {
-            Screen::Monster(Kind::Munch) => Tool::Munch(cx.new(munch::Munch::new)),
-            Screen::Monster(Kind::Stitch) => Tool::Stitch(cx.new(stitch::Stitch::new)),
-            Screen::Monster(Kind::Snip) => Tool::Snip(cx.new(snip::Snip::new)),
-            Screen::Monster(Kind::Squish) => Tool::Squish(cx.new(squish::Squish::new)),
-            Screen::Monster(Kind::Hush) => Tool::Hush(cx.new(hush::Hush::new)),
-            Screen::Monster(Kind::Peek) => Tool::Peek(cx.new(peek::Peek::new)),
-            Screen::Chains => Tool::Chains(cx.new(chain::Chains::new)),
-        }
-    }
+/// An open screen, whatever its type.
+pub trait ToolView {
+    fn view(&self) -> AnyView;
+    fn focus(&self, window: &mut Window, cx: &App);
+    fn feed(&self, paths: Vec<PathBuf>, cx: &mut App);
+}
 
-    fn screen(&self) -> Screen {
-        match self {
-            Tool::Munch(_) => Kind::Munch.into(),
-            Tool::Stitch(_) => Kind::Stitch.into(),
-            Tool::Snip(_) => Kind::Snip.into(),
-            Tool::Squish(_) => Kind::Squish.into(),
-            Tool::Hush(_) => Kind::Hush.into(),
-            Tool::Peek(_) => Kind::Peek.into(),
-            Tool::Chains(_) => Screen::Chains,
-        }
-    }
-
-    fn feed(&self, paths: Vec<PathBuf>, cx: &mut App) {
-        match self {
-            Tool::Munch(view) => view.update(cx, |view, cx| {
-                if let Some(path) = paths.into_iter().next() {
-                    view.load(path, cx);
-                }
-            }),
-            Tool::Stitch(view) => view.update(cx, |view, cx| view.add(paths, cx)),
-            Tool::Snip(view) => view.update(cx, |view, cx| {
-                if let Some(path) = paths.into_iter().next() {
-                    view.load(path, cx);
-                }
-            }),
-            Tool::Squish(view) => view.update(cx, |view, cx| {
-                if let Some(path) = paths.into_iter().next() {
-                    view.load(path, cx);
-                }
-            }),
-            Tool::Hush(view) => view.update(cx, |view, cx| {
-                if let Some(path) = paths.into_iter().next() {
-                    view.load(path, cx);
-                }
-            }),
-            Tool::Peek(view) => view.update(cx, |view, cx| {
-                if let Some(path) = paths.into_iter().next() {
-                    view.load(path, cx);
-                }
-            }),
-            Tool::Chains(view) => view.update(cx, |view, cx| view.run(paths, cx)),
-        }
+impl<T: MonsterScreen> ToolView for Entity<T> {
+    fn view(&self) -> AnyView {
+        self.clone().into()
     }
 
     fn focus(&self, window: &mut Window, cx: &App) {
-        match self {
-            Tool::Munch(view) => window.focus(&view.read(cx).focus),
-            Tool::Stitch(view) => window.focus(&view.read(cx).focus),
-            Tool::Snip(view) => window.focus(&view.read(cx).focus),
-            Tool::Squish(view) => window.focus(&view.read(cx).focus),
-            Tool::Hush(view) => window.focus(&view.read(cx).focus),
-            Tool::Peek(view) => window.focus(&view.read(cx).focus),
-            Tool::Chains(view) => window.focus(&view.read(cx).focus),
-        }
+        window.focus(&self.read(cx).focus_handle());
     }
 
-    fn view(&self) -> AnyView {
-        match self {
-            Tool::Munch(view) => view.clone().into(),
-            Tool::Stitch(view) => view.clone().into(),
-            Tool::Snip(view) => view.clone().into(),
-            Tool::Squish(view) => view.clone().into(),
-            Tool::Hush(view) => view.clone().into(),
-            Tool::Peek(view) => view.clone().into(),
-            Tool::Chains(view) => view.clone().into(),
-        }
+    fn feed(&self, paths: Vec<PathBuf>, cx: &mut App) {
+        self.update(cx, |view, cx| view.feed(paths, cx));
     }
+}
+
+/// Creates a screen, for [`ExtraMonster::open`].
+pub fn open_screen<T: MonsterScreen>(cx: &mut App, new: impl FnOnce(&mut Context<T>) -> T) -> Box<dyn ToolView> {
+    Box::new(cx.new(new))
+}
+
+/// A monster that isn't part of the free pack, added through
+/// [`Extensions::monsters`](crate::Extensions). It gets a tile after the pack's.
+pub struct ExtraMonster {
+    pub name: &'static str,
+    /// What it does, in a few words.
+    pub job: &'static str,
+    pub blurb: &'static str,
+    pub color: u32,
+    pub portrait: fn() -> Arc<Image>,
+    /// Whether folders dropped on it are passed on (otherwise only PDFs are).
+    pub takes_folders: bool,
+    /// Opens its screen, e.g. `|cx| open_screen(cx, MyScreen::new)`.
+    pub open: fn(&mut App) -> Box<dyn ToolView>,
+}
+
+/// Monsters that take one file at a time.
+macro_rules! feeds_one_file {
+    ($($ty:ty),*) => {$(
+        impl MonsterScreen for $ty {
+            fn focus_handle(&self) -> FocusHandle {
+                self.focus.clone()
+            }
+
+            fn feed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+                if let Some(path) = paths.into_iter().next() {
+                    self.load(path, cx);
+                }
+            }
+        }
+    )*};
+}
+
+feeds_one_file!(munch::Munch, snip::Snip, squish::Squish, hush::Hush, peek::Peek);
+
+impl MonsterScreen for stitch::Stitch {
+    fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    fn feed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.add(paths, cx);
+    }
+}
+
+impl MonsterScreen for chain::Chains {
+    fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    fn feed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.run(paths, cx);
+    }
+}
+
+/// One open screen.
+struct Tool {
+    screen: Screen,
+    view: Box<dyn ToolView>,
+}
+
+impl Tool {
+    fn new(screen: Screen, extras: &[ExtraMonster], cx: &mut App) -> Self {
+        let view = match screen {
+            Screen::Monster(Kind::Munch) => open_screen(cx, munch::Munch::new),
+            Screen::Monster(Kind::Stitch) => open_screen(cx, stitch::Stitch::new),
+            Screen::Monster(Kind::Snip) => open_screen(cx, snip::Snip::new),
+            Screen::Monster(Kind::Squish) => open_screen(cx, squish::Squish::new),
+            Screen::Monster(Kind::Hush) => open_screen(cx, hush::Hush::new),
+            Screen::Monster(Kind::Peek) => open_screen(cx, peek::Peek::new),
+            Screen::Chains => open_screen(cx, chain::Chains::new),
+            Screen::Extra(ix) => (extras[ix].open)(cx),
+        };
+        Tool { screen, view }
+    }
+}
+
+/// What a tile on the home screen shows.
+struct Card {
+    name: &'static str,
+    job: &'static str,
+    blurb: &'static str,
+    color: u32,
+    ready: bool,
 }
 
 struct Home {
     focus: FocusHandle,
     portraits: Vec<Arc<Image>>,
+    extras: Vec<ExtraMonster>,
+    extra_portraits: Vec<Arc<Image>>,
     /// Monsters that have been opened, kept so their work survives a trip home.
     tools: Vec<Tool>,
     active: Option<Screen>,
@@ -225,27 +266,30 @@ impl Home {
     /// Switches to a monster's screen, waking it up if needed.
     fn show(&mut self, screen: impl Into<Screen>, window: &mut Window, cx: &mut Context<Self>) -> &Tool {
         let screen = screen.into();
-        let ix = match self.tools.iter().position(|t| t.screen() == screen) {
+        let ix = match self.tools.iter().position(|t| t.screen == screen) {
             Some(ix) => ix,
             None => {
-                self.tools.push(Tool::new(screen, cx));
+                let tool = Tool::new(screen, &self.extras, cx);
+                self.tools.push(tool);
                 self.tools.len() - 1
             }
         };
-        self.tools[ix].focus(window, cx);
+        self.tools[ix].view.focus(window, cx);
         self.active = Some(screen);
         cx.notify();
         &self.tools[ix]
     }
 
     fn feed(&mut self, screen: impl Into<Screen>, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        let paths: Vec<PathBuf> = paths.into_iter().filter(|p| is_pdf(p)).collect();
+        let screen = screen.into();
+        let folders = matches!(screen, Screen::Extra(ix) if self.extras[ix].takes_folders);
+        let paths: Vec<PathBuf> = paths.into_iter().filter(|p| is_pdf(p) || (folders && p.is_dir())).collect();
         if paths.is_empty() {
             self.status = "Only PDFs, please. We're picky eaters.".into();
             cx.notify();
             return;
         }
-        self.show(screen, window, cx).feed(paths, cx);
+        self.show(screen, window, cx).view.feed(paths, cx);
     }
 
     fn go_home(&mut self, _: &GoHome, window: &mut Window, cx: &mut Context<Self>) {
@@ -271,8 +315,7 @@ impl Home {
         .detach();
     }
 
-    fn render_tile(&self, ix: usize, kind: Kind, cx: &mut Context<Self>) -> impl IntoElement {
-        let s = kind.species();
+    fn render_tile(&self, ix: usize, s: Card, portrait: Arc<Image>, screen: Screen, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id(("tile", ix))
             .flex()
@@ -284,7 +327,7 @@ impl Home {
             .bg(rgb(theme::CARD))
             .border_2()
             .border_color(rgb(theme::BORDER))
-            .child(img(self.portraits[ix].clone()).w(px(104.)).h(px(108.)))
+            .child(img(portrait).w(px(104.)).h(px(108.)))
             .child(div().text_lg().font_weight(FontWeight::BOLD).child(s.name))
             .child(div().text_color(rgb(s.color)).font_weight(FontWeight::MEDIUM).child(s.job))
             .child(
@@ -300,10 +343,10 @@ impl Home {
                         .hover(|t| t.bg(rgb(theme::CARD_HOVER)).border_color(rgb(s.color)))
                         .drag_over::<ExternalPaths>(move |t, _, _, _| t.border_color(rgb(s.color)))
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.show(kind, window, cx);
+                            this.show(screen, window, cx);
                         }))
                         .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
-                            this.feed(kind, paths.paths().to_vec(), window, cx)
+                            this.feed(screen, paths.paths().to_vec(), window, cx)
                         }))
                 } else {
                     tile.opacity(0.5).child(
@@ -320,11 +363,20 @@ impl Home {
     }
 
     fn render_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tiles: Vec<_> = PACK
+        let mut tiles: Vec<_> = PACK
             .iter()
             .enumerate()
-            .map(|(ix, &kind)| self.render_tile(ix, kind, cx).into_any_element())
+            .map(|(ix, &kind)| {
+                let s = kind.species();
+                let card = Card { name: s.name, job: s.job, blurb: s.blurb, color: s.color, ready: s.ready };
+                self.render_tile(ix, card, self.portraits[ix].clone(), kind.into(), cx).into_any_element()
+            })
             .collect();
+        for (ix, m) in self.extras.iter().enumerate() {
+            let card = Card { name: m.name, job: m.job, blurb: m.blurb, color: m.color, ready: true };
+            let portrait = self.extra_portraits[ix].clone();
+            tiles.push(self.render_tile(PACK.len() + ix, card, portrait, Screen::Extra(ix), cx).into_any_element());
+        }
         div()
             .id("home")
             .flex_1()
@@ -405,7 +457,7 @@ impl Render for Home {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self
             .active
-            .and_then(|screen| self.tools.iter().find(|t| t.screen() == screen));
+            .and_then(|screen| self.tools.iter().find(|t| t.screen == screen));
 
         let root = div()
             .key_context("Home")
@@ -419,7 +471,7 @@ impl Render for Home {
             .text_sm();
 
         match active {
-            Some(tool) => root.child(tool.view()),
+            Some(tool) => root.child(tool.view.view()),
             None => root
                 .on_action(cx.listener(Self::open))
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
@@ -446,7 +498,7 @@ fn toolbar(
 }
 
 /// [`toolbar`] for screens that aren't one monster's.
-fn toolbar_with(
+pub fn toolbar_with(
     icon: impl IntoElement,
     name: &'static str,
     title: String,
@@ -473,7 +525,7 @@ fn toolbar_with(
 }
 
 /// What a monster shows before it has been fed.
-fn empty_state(
+pub fn empty_state(
     portrait: Arc<Image>,
     title: &'static str,
     subtitle: &'static str,
@@ -492,7 +544,7 @@ fn empty_state(
         .child(action)
 }
 
-fn status_bar(status: SharedString, busy: bool, hint: Option<&'static str>) -> impl IntoElement {
+pub fn status_bar(status: SharedString, busy: bool, hint: Option<&'static str>) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -509,7 +561,7 @@ fn status_bar(status: SharedString, busy: bool, hint: Option<&'static str>) -> i
         .when_some(hint, |d, hint| d.child(div().text_color(rgb(theme::MUTED)).child(hint)))
 }
 
-fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, primary: bool) -> Stateful<gpui::Div> {
+pub fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, primary: bool) -> Stateful<gpui::Div> {
     let (bg, hover, fg) = if primary {
         (theme::ACCENT, theme::ACCENT_HOVER, 0xffffff)
     } else {
@@ -553,7 +605,7 @@ fn render_image(gray: &GrayImage) -> Arc<RenderImage> {
 }
 
 /// Like [`render_image`], for colour bitmaps.
-fn render_rgba(rgba: &RgbaImage) -> Arc<RenderImage> {
+pub fn render_rgba(rgba: &RgbaImage) -> Arc<RenderImage> {
     let mut bgra = rgba.clone();
     for pixel in bgra.pixels_mut() {
         pixel.0.swap(0, 2);
@@ -561,7 +613,7 @@ fn render_rgba(rgba: &RgbaImage) -> Arc<RenderImage> {
     Arc::new(RenderImage::new(vec![Frame::new(bgra)]))
 }
 
-fn plural(n: usize) -> &'static str {
+pub fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
