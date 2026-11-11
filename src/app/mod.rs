@@ -3,7 +3,7 @@
 mod chain;
 mod hush;
 mod munch;
-mod pack;
+pub mod pack;
 mod peek;
 mod snip;
 mod squish;
@@ -26,7 +26,8 @@ use pack::{Kind, PACK};
 
 actions!(pdfmonster, [Open, Save, ToggleOriginal, GoHome, Quit]);
 
-mod theme {
+/// The app's colours, for screens added by other builds to match.
+pub mod theme {
     pub const BG: u32 = 0x16131e;
     pub const PANEL: u32 = 0x1f1a2b;
     pub const CARD: u32 = 0x282236;
@@ -43,7 +44,7 @@ mod theme {
 
 /// Opens the app, with `initial` files fed to Munch (one) or Stitch (several).
 pub fn run(initial: Vec<PathBuf>, extensions: crate::Extensions) {
-    let crate::Extensions { monsters: extras, .. } = extensions;
+    let crate::Extensions { monsters: extras, menus, setup, branding, .. } = extensions;
     Application::new().run(move |cx: &mut App| {
         cx.activate(true);
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -54,10 +55,10 @@ pub fn run(initial: Vec<PathBuf>, extensions: crate::Extensions) {
             KeyBinding::new("escape", GoHome, None),
             KeyBinding::new("secondary-q", Quit, None),
         ]);
-        cx.set_menus(vec![
+        let mut all_menus = vec![
             Menu {
-                name: "pdfmonster".into(),
-                items: vec![MenuItem::action("Quit pdfmonster", Quit)],
+                name: branding.name.into(),
+                items: vec![MenuItem::action(format!("Quit {}", branding.name), Quit)],
             },
             Menu {
                 name: "File".into(),
@@ -70,17 +71,22 @@ pub fn run(initial: Vec<PathBuf>, extensions: crate::Extensions) {
                     MenuItem::action("Toggle Before / After", ToggleOriginal),
                 ],
             },
-        ]);
+        ];
+        all_menus.extend(menus);
+        cx.set_menus(all_menus);
+        if let Some(setup) = setup {
+            setup(cx);
+        }
         cx.on_window_closed(|cx| cx.quit()).detach();
 
         let bounds = Bounds::centered(None, size(px(1120.), px(780.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("pdfmonster".into()),
+                title: Some(branding.name.into()),
                 ..Default::default()
             }),
-            app_id: Some("pdfmonster".into()),
+            app_id: Some(branding.app_id.into()),
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
@@ -492,7 +498,7 @@ fn toolbar(
 }
 
 /// [`toolbar`] for screens that aren't one monster's.
-fn toolbar_with(
+pub fn toolbar_with(
     icon: impl IntoElement,
     name: &'static str,
     title: String,
@@ -519,7 +525,7 @@ fn toolbar_with(
 }
 
 /// What a monster shows before it has been fed.
-fn empty_state(
+pub fn empty_state(
     portrait: Arc<Image>,
     title: &'static str,
     subtitle: &'static str,
@@ -538,7 +544,7 @@ fn empty_state(
         .child(action)
 }
 
-fn status_bar(status: SharedString, busy: bool, hint: Option<&'static str>) -> impl IntoElement {
+pub fn status_bar(status: SharedString, busy: bool, hint: Option<&'static str>) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -555,7 +561,7 @@ fn status_bar(status: SharedString, busy: bool, hint: Option<&'static str>) -> i
         .when_some(hint, |d, hint| d.child(div().text_color(rgb(theme::MUTED)).child(hint)))
 }
 
-fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, primary: bool) -> Stateful<gpui::Div> {
+pub fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, primary: bool) -> Stateful<gpui::Div> {
     let (bg, hover, fg) = if primary {
         (theme::ACCENT, theme::ACCENT_HOVER, 0xffffff)
     } else {
@@ -599,7 +605,7 @@ fn render_image(gray: &GrayImage) -> Arc<RenderImage> {
 }
 
 /// Like [`render_image`], for colour bitmaps.
-fn render_rgba(rgba: &RgbaImage) -> Arc<RenderImage> {
+pub fn render_rgba(rgba: &RgbaImage) -> Arc<RenderImage> {
     let mut bgra = rgba.clone();
     for pixel in bgra.pixels_mut() {
         pixel.0.swap(0, 2);
@@ -607,7 +613,7 @@ fn render_rgba(rgba: &RgbaImage) -> Arc<RenderImage> {
     Arc::new(RenderImage::new(vec![Frame::new(bgra)]))
 }
 
-fn plural(n: usize) -> &'static str {
+pub fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 

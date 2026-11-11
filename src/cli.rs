@@ -41,35 +41,51 @@ pub fn main(mut extensions: crate::Extensions) -> ExitCode {
     chain::register(std::mem::take(&mut extensions.steps));
     attach_parent_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let name = extensions.branding.name;
+    let report = |result: anyhow::Result<()>| match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{name}: {err:#}");
+            ExitCode::FAILURE
+        }
+    };
     match args.first().map(String::as_str) {
         Some("-h" | "--help") => {
             print!("{USAGE}");
+            for command in &extensions.commands {
+                println!("    {}", command.usage.trim_end().replace('\n', "\n    "));
+            }
             ExitCode::SUCCESS
         }
-        Some(cmd @ ("fix" | "stitch" | "snip" | "squish" | "hush" | "peek" | "chain" | "watch")) => {
-            let result = match cmd {
-                "fix" => fix(&args[1..]),
-                "stitch" => stitch(&args[1..]),
-                "snip" => snip(&args[1..]),
-                "hush" => hush(&args[1..]),
-                "peek" => peek(&args[1..]),
-                "chain" => chain(&args[1..]),
-                "watch" => watch(&args[1..]),
-                _ => squish(&args[1..]),
-            };
-            match result {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(err) => {
-                    eprintln!("pdfmonster: {err:#}");
-                    ExitCode::FAILURE
-                }
-            }
+        Some(cmd @ ("fix" | "stitch" | "snip" | "squish" | "hush" | "peek" | "chain" | "watch")) => report(match cmd {
+            "fix" => fix(&args[1..]),
+            "stitch" => stitch(&args[1..]),
+            "snip" => snip(&args[1..]),
+            "hush" => hush(&args[1..]),
+            "peek" => peek(&args[1..]),
+            "chain" => chain(&args[1..]),
+            "watch" => watch(&args[1..]),
+            _ => squish(&args[1..]),
+        }),
+        Some(cmd) if extensions.commands.iter().any(|c| c.name == cmd) => {
+            let command = extensions.commands.iter().find(|c| c.name == cmd).expect("just found it");
+            report((command.run)(&args[1..]))
         }
         _ => {
             app::run(args.iter().map(PathBuf::from).collect(), extensions);
             ExitCode::SUCCESS
         }
     }
+}
+
+/// A subcommand added through [`Extensions::commands`](crate::Extensions).
+pub struct Command {
+    /// What's typed after the program name: `stamp` in `pdfmonster-pro stamp`.
+    pub name: &'static str,
+    /// How to use it, shown under `--help`, e.g. `pdfmonster-pro stamp <IN.pdf>   stamp every page`.
+    pub usage: &'static str,
+    /// Runs it with the arguments after the name.
+    pub run: fn(&[String]) -> anyhow::Result<()>,
 }
 
 /// A GUI-subsystem exe gets no console, so `--help` and the subcommands would print nothing

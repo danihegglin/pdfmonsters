@@ -165,6 +165,18 @@ cargo build --release
 cargo test
 ```
 
+## Building on pdfmonster
+
+pdfmonster is also a library. Another binary can depend on it and add to the app through
+`Extensions`, without touching this repository:
+
+- **monsters**: extra tiles on the home screen, each with its own screen (`app::ExtraMonster`)
+- **steps**: extra chain steps, which also work in watched folders and `pdfmonster chain` (`chain::ChainStep`)
+- **commands**: extra CLI subcommands (`cli::Command`)
+- **menus**, a **setup** hook for actions and key bindings, and **branding** (name and app id)
+
+`examples/extended.rs` uses all of them; try `cargo run --example extended`.
+
 ## Downloads
 
 Every tagged release (`v*`) is built by GitHub Actions and attached to the

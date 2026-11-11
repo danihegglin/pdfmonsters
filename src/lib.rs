@@ -25,6 +25,29 @@ pub struct Extensions {
     pub monsters: Vec<app::ExtraMonster>,
     /// Extra chain steps, offered after the free ones.
     pub steps: Vec<&'static dyn chain::ChainStep>,
+    /// Extra subcommands, tried after the free ones.
+    pub commands: Vec<cli::Command>,
+    /// Extra menus, after File and View.
+    pub menus: Vec<gpui::Menu>,
+    /// Called once when the app starts, after the free app's actions and key
+    /// bindings are set up: a place to add your own.
+    pub setup: Option<fn(&mut gpui::App)>,
+    pub branding: Branding,
+}
+
+/// What the app calls itself.
+pub struct Branding {
+    /// In the window title, the app menu and error messages.
+    pub name: &'static str,
+    /// The app id the desktop knows it by (Linux `.desktop` file, Wayland).
+    /// A different id lets two builds be installed side by side.
+    pub app_id: &'static str,
+}
+
+impl Default for Branding {
+    fn default() -> Self {
+        Branding { name: "pdfmonster", app_id: "pdfmonster" }
+    }
 }
 
 /// A byte count for people: `1.6 KB`, `3.2 MB`.
