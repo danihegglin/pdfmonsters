@@ -100,6 +100,32 @@ pub fn find_text(doc: &Document, needle: &str) -> Vec<Area> {
     found
 }
 
+/// The text a page draws, in drawing order. A line break goes wherever the
+/// next glyph doesn't sit on the same line, and a space wherever there's a gap
+/// wider than about a sixth of the text height (words spaced by positioning
+/// instead of space characters still come out as words).
+pub fn page_text(doc: &Document, page_id: ObjectId) -> String {
+    let Some(walk) = Walk::page(doc, page_id) else { return String::new() };
+    let mut out = String::new();
+    let mut prev: Option<[f64; 4]> = None;
+    for g in walk.runs.iter().flat_map(|run| run.glyphs.iter()) {
+        if g.text.is_empty() {
+            continue;
+        }
+        if let Some(p) = prev {
+            let b = g.bbox;
+            if !overlaps_vertically(&p, &b) {
+                out.push('\n');
+            } else if b[0] - p[2] > 0.15 * (b[3] - b[1]).max(p[3] - p[1]) && !out.ends_with(' ') {
+                out.push(' ');
+            }
+        }
+        out.push_str(&g.text);
+        prev = Some(g.bbox);
+    }
+    out
+}
+
 /// Removes everything under the areas from the document and paints them black.
 pub fn redact(doc: &mut Document, areas: &[Area]) -> Result<Report> {
     let mut report = Report::default();
@@ -951,6 +977,13 @@ pub fn invert(m: &Matrix) -> Option<Matrix> {
 mod tests {
     use super::*;
     use lopdf::dictionary;
+
+    #[test]
+    fn page_text_keeps_lines_and_positioned_spaces() {
+        let doc = report_pdf();
+        let page = doc.get_pages()[&1];
+        assert_eq!(page_text(&doc, page), "Customer: Jane Example, account 4711\nTotal due CHF 99");
+    }
 
     /// A page with two lines in Helvetica *with* a Widths array (so glyphs can
     /// be cut precisely), plus a JPEG photo with EXIF, plus metadata.
