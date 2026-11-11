@@ -43,7 +43,7 @@ mod theme {
 
 /// Opens the app, with `initial` files fed to Munch (one) or Stitch (several).
 pub fn run(initial: Vec<PathBuf>, extensions: crate::Extensions) {
-    let crate::Extensions { monsters: extras } = extensions;
+    let crate::Extensions { monsters: extras, .. } = extensions;
     Application::new().run(move |cx: &mut App| {
         cx.activate(true);
         cx.on_action(|_: &Quit, cx| cx.quit());

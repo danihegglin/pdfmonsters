@@ -18,12 +18,13 @@ pub mod std_widths;
 pub mod stitch;
 pub mod watch;
 
-/// What a build adds on top of the free app: extra monsters (and, later,
-/// chain steps and commands). The free `pdfmonster` binary adds nothing.
+/// What a build adds on top of the free app. The free `pdfmonster` binary adds nothing.
 #[derive(Default)]
 pub struct Extensions {
     /// Extra monsters, shown on the home screen after the pack.
     pub monsters: Vec<app::ExtraMonster>,
+    /// Extra chain steps, offered after the free ones.
+    pub steps: Vec<&'static dyn chain::ChainStep>,
 }
 
 /// A byte count for people: `1.6 KB`, `3.2 MB`.

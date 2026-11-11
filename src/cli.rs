@@ -37,7 +37,8 @@ USAGE:
 ";
 
 /// Runs the command line, or opens the app when no subcommand is given.
-pub fn main(extensions: crate::Extensions) -> ExitCode {
+pub fn main(mut extensions: crate::Extensions) -> ExitCode {
+    chain::register(std::mem::take(&mut extensions.steps));
     attach_parent_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
